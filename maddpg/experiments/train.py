@@ -12,8 +12,6 @@ from maddpg.trainer.rmaddpg import _RMADDPGAgentTrainer
 import utils
 from network import mlp_model, lstm_fc_model
 
-os.environ["CUDA_VISIBLE_DEVICES"]="3"
-
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Output Filename
@@ -115,7 +113,6 @@ def create_seed(seed):
 class trainTest():
     def init(self, arglist):
         self.sess = tf.InteractiveSession()
-        print("qwelrjasleiufjalksdf")
         print(self.sess)
 
         # To make sure that training and testing are based on diff seeds
