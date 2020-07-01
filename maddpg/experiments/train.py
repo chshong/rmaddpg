@@ -14,10 +14,6 @@ import tensorflow.contrib.layers as layers
 import utils
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"]="3"
-
-
-
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
