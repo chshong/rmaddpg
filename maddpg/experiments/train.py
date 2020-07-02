@@ -180,12 +180,21 @@ def train(arglist):
         new_episode = True # start of a new episode (used for replay buffer)
         start_saving_comm = False
 
+        lstm_time = 0
+        env_time = 0
+        etc_time = 0
+        exp_time = 0
+        sampling_time = 0
+        preupdate_time = 0
+        train_time = 0
+
         if arglist.graph:
             print("Setting up graph writer!")
             writer = tf.summary.FileWriter("learning_curves/graph",sess.graph)
 
         print('Starting iterations...')
         while True:
+            tr_start = time.time()
             if arglist.actor_lstm:
                 # get critic input states
                 p_in_c_n, p_in_h_n = get_lstm_states('p', trainers) # num_trainers x 1 x 1 x 64
@@ -202,11 +211,19 @@ def train(arglist):
             if arglist.actor_lstm:
                 p_out_c_n, p_out_h_n = get_lstm_states('p', trainers) # num_trainers x 1 x 1 x 64
 
+            lstm_time += time.time() - tr_start
+            tr_start = time.time()
+
             # environment step
             new_obs_n, rew_n, done_n, info_n = env.step(action_n)
             episode_step += 1
             done = all(done_n)
             terminal = (episode_step >= arglist.max_episode_len)
+
+            env_time += time.time() - tr_start
+            tr_start = time.time()
+
+
             # collect experience
             for i, agent in enumerate(trainers):
                 num_episodes = len(episode_rewards)
@@ -235,6 +252,9 @@ def train(arglist):
                                     new_episode)
 
                 obs_n = new_obs_n
+
+            exp_time += time.time() - tr_start
+            tr_start = time.time()
 
             # Adding rewards
             if arglist.tracking:
@@ -287,23 +307,37 @@ def train(arglist):
                     break
                 continue
 
+            etc_time += time.time() - tr_start
+
             # update all trainers, if not in display or benchmark mode
             loss = None
 
             # get same episode sampling
+            tr_start = time.time()
             if arglist.sync_sampling:
                 inds = [random.randint(0, len(trainers[0].replay_buffer._storage)-1) for i in range(arglist.batch_size)]
             else:
                 inds = None
+
+            sampling_time += time.time() - tr_start
+            tr_start = time.time()
 
             for agent in trainers:
                 # if arglist.lstm:
                 #     agent.preupdate(inds=inds)
                 # else:
                 agent.preupdate(inds)
+
+            preupdate_time += time.time() - tr_start
+            tr_start = time.time()
+
             for agent in trainers:
                 loss = agent.update(trainers, train_step)
                 if loss is None: continue
+
+            train_time += time.time() - tr_start
+
+
 
             # for displaying learned policies
             if arglist.display:
@@ -317,11 +351,24 @@ def train(arglist):
                 if num_adversaries == 0:
                     print("steps: {}, episodes: {}, mean episode reward: {}, time: {}".format(
                         train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]), round(time.time()-t_start, 3)))
+                    print("sampling: {}, preupdate: {}, train: {}".format(round(sampling_time, 3), round(preupdate_time, 3), round(train_time, 3)))
+                    print("lstm: {}, env: {}, exp: {}".format(round(lstm_time, 3), round(env_time, 3), round(exp_time, 3)))
+                    print("etc:{}".format(round(etc_time, 3)))
                 else:
                     print("steps: {}, episodes: {}, mean episode reward: {}, agent episode reward: {}, time: {}".format(
                         train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]),
                         [np.mean(rew[-arglist.save_rate:]) for rew in agent_rewards], round(time.time()-t_start, 3)))
+                    print("sampling: {}, preupdate: {}, train: {}".format(round(sampling_time, 3), round(preupdate_time, 3), round(train_time, 3)))
+                    print("lstm: {}, env: {}, exp: {}".format(round(lstm_time, 3), round(env_time, 3), round(exp_time, 3)))
+                    print("etc:{}".format(round(etc_time, 3)))
                 t_start = time.time()
+                lstm_time = 0
+                exp_time = 0
+                env_time = 0
+                etc_time = 0
+                sampling_time = 0
+                preupdate_time = 0
+                train_time = 0
                 # Keep track of final episode reward
                 final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
                 for rew in agent_rewards:
