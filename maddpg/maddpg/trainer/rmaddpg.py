@@ -104,7 +104,7 @@ class _RMADDPGAgentTrainer(AgentTrainer):
 
     def reset_lstm(self):
         self.q_c, self.q_h = create_init_state(num_batches=1, len_sequence=self.q_h.shape[-1])
-        self.p_h, self.p_h = create_init_state(num_batches=1, len_sequence=self.p_h.shape[-1])
+        self.p_c, self.p_h = create_init_state(num_batches=1, len_sequence=self.p_h.shape[-1])
 
     def action(self, obs):
         if self.args.actor_lstm:
