@@ -14,6 +14,8 @@ from network import mlp_model, lstm_fc_model
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
+    # Using CPU or GPU
+    parser.add_argument("--use-cpu", action="store_true", default=False)
     # Output Filename
     parser.add_argument("--commit_num", type=str, default="0", help="commit number?")
     # Environment
@@ -111,9 +113,12 @@ def create_seed(seed):
     tf.set_random_seed(seed)
 
 class trainTest():
-    def init(self, arglist):
-        self.sess = tf.InteractiveSession()
-        print(self.sess)
+    def init(self, arglist, env):
+        num_thread = 1
+        tf_config = tf.ConfigProto(
+            inter_op_parallelism_threads=num_thread,
+            intra_op_parallelism_threads=num_thread)
+        self.sess = tf.InteractiveSession(config=tf_config)
 
         # To make sure that training and testing are based on diff seeds
         if arglist.restore:
@@ -121,13 +126,10 @@ class trainTest():
         else:
             create_seed(arglist.seed)
 
-        # Create environment
-        self.env = make_env(arglist.scenario, arglist, arglist.benchmark)
-
         # Create agent trainers
-        self.obs_shape_n = [self.env.observation_space[i].shape for i in range(self.env.n)]
-        self.num_adversaries = min(self.env.n, arglist.num_adversaries)
-        self.trainers = get_trainers(self.env, self.num_adversaries, self.obs_shape_n, arglist)
+        self.obs_shape_n = [env.observation_space[i].shape for i in range(env.n)]
+        self.num_adversaries = min(env.n, arglist.num_adversaries)
+        self.trainers = get_trainers(env, self.num_adversaries, self.obs_shape_n, arglist)
         print('Using good policy {} and adv policy {}'.format(arglist.good_policy, arglist.adv_policy))
 
         # Initialize
@@ -141,12 +143,12 @@ class trainTest():
             U.load_state(arglist.load_dir)
 
         self.episode_rewards = [0.0]  # sum of rewards for all agents
-        self.agent_rewards = [[0.0] for _ in range(self.env.n)]  # individual agent reward
+        self.agent_rewards = [[0.0] for _ in range(env.n)]  # individual agent reward
         self.final_ep_rewards = []  # sum of rewards for training curve
         self.final_ep_ag_rewards = []  # agent rewards for training curve
         self.agent_info = [[[]]]  # placeholder for benchmarking info
         self.saver = tf.train.Saver()
-        self.obs_n = self.env.reset()
+        self.obs_n = env.reset()
         self.train_step = 0
         self.t_start = time.time()
         self.new_episode = True # start of a new episode (used for replay buffer)
@@ -159,7 +161,7 @@ class trainTest():
         if arglist.analysis:
             print("Starting analysis on {}...".format(arglist.analysis))
             if arglist.analysis != 'video':
-                analyze.run_analysis(arglist, self.env, self.trainers)
+                analyze.run_analysis(arglist, env, self.trainers)
             return # should be a single run
 
     def update(self, arglist, obs_n, rew_n, done_n, info_n, terminal):
@@ -196,9 +198,6 @@ class trainTest():
             # Adding rewards
             if arglist.tracking:
                 for i, a in enumerate(self.trainers):
-                    # if arglist.num_episodes - len(self.episode_rewards) <= 1000:
-                    #     a.tracker.record_information("goal", np.array(self.env.world.landmarks[0].state.p_pos))
-                    #     a.tracker.record_information("position",np.array(self.env.world.agents[i].state.p_pos))
                     a.tracker.record_information("ag_reward", rew_n[i])
                     a.tracker.record_information("team_dist_reward", info_n["team_dist"][i])
                     a.tracker.record_information("team_diff_reward", info_n["team_diff"][i])
@@ -298,153 +297,6 @@ class trainTest():
 
         return self.action_n
 
-
-
-    def loop(self, arglist):
-        print('Starting iterations...')
-        while True:
-            if arglist.actor_lstm:
-                # get critic input states
-                p_in_c_n, p_in_h_n = get_lstm_states('p', self.trainers) # num_trainers x 1 x 1 x 64
-            if arglist.critic_lstm:
-                q_in_c_n, q_in_h_n = get_lstm_states('q', self.trainers) # num_trainers x 1 x 1 x 64
-
-            # get action
-            action_n = [agent.action(obs) for agent, obs in zip(self.trainers,self.obs_n)]
-            if arglist.critic_lstm:
-                # get critic output states
-                p_states = [p_in_c_n, p_in_h_n] if arglist.actor_lstm else []
-                update_critic_lstm(self.trainers, self.obs_n, action_n, p_states)
-                q_out_c_n, q_out_h_n = get_lstm_states('q', self.trainers) # num_trainers x 1 x 1 x 64
-            if arglist.actor_lstm:
-                p_out_c_n, p_out_h_n = get_lstm_states('p', self.trainers) # num_trainers x 1 x 1 x 64
-
-            # environment step
-            new_obs_n, rew_n, done_n, info_n = self.env.step(action_n)
-            self.episode_step += 1
-            done = all(done_n)
-            terminal = (self.episode_step >= arglist.max_episode_len)
-
-            # collect experience
-            for i, agent in enumerate(self.trainers):
-                num_episodes = len(self.episode_rewards)
-                # do this every iteration
-                if arglist.critic_lstm and arglist.actor_lstm:
-                    agent.experience(self.obs_n[i], action_n[i], rew_n[i],
-                                    new_obs_n[i], done_n[i], # terminal,
-                                    p_in_c_n[i][0], p_in_h_n[i][0],
-                                    p_out_c_n[i][0], p_out_h_n[i][0],
-                                    q_in_c_n[i][0], q_in_h_n[i][0],
-                                    q_out_c_n[i][0], q_out_h_n[i][0], self.new_episode)
-                elif arglist.critic_lstm:
-                    agent.experience(obs_n[i], action_n[i], rew_n[i],
-                                    new_obs_n[i], done_n[i], # terminal,
-                                    q_in_c_n[i][0], q_in_h_n[i][0],
-                                    q_out_c_n[i][0], q_out_h_n[i][0],self.new_episode)
-                elif arglist.actor_lstm:
-                    agent.experience(obs_n[i], action_n[i], rew_n[i],
-                                    new_obs_n[i], done_n[i], # terminal,
-                                    p_in_c_n[i][0], p_in_h_n[i][0],
-                                    p_out_c_n[i][0], p_out_h_n[i][0],
-                                    self.new_episode)
-                else:
-                    agent.experience(obs_n[i], action_n[i], rew_n[i],
-                                    new_obs_n[i], done_n[i], # terminal,
-                                    self.new_episode)
-
-                self.obs_n = new_obs_n
-
-            # Adding rewards
-            if arglist.tracking:
-                for i, a in enumerate(self.trainers):
-                    if arglist.num_episodes - len(self.episode_rewards) <= 1000:
-                        a.tracker.record_information("goal", np.array(self.env.world.landmarks[0].state.p_pos))
-                        a.tracker.record_information("position",np.array(self.env.world.agents[i].state.p_pos))
-                    a.tracker.record_information("ag_reward", rew_n[i])
-                    a.tracker.record_information("team_dist_reward", info_n["team_dist"][i])
-                    a.tracker.record_information("team_diff_reward", info_n["team_diff"][i])
-
-            # Closing graph writer
-            if arglist.graph:
-                self.writer.close()
-            for i, rew in enumerate(rew_n):
-                self.episode_rewards[-1] += rew
-                self.agent_rewards[i][-1] += rew
-
-            if done or terminal:
-                self.new_episode = True
-                num_episodes = len(self.episode_rewards)
-                self.obs_n = self.env.reset()
-                # reset trainers
-                if arglist.actor_lstm or arglist.critic_lstm:
-                    for agent in self.trainers:
-                        agent.reset_lstm()
-                if arglist.tracking:
-                    for agent in self.trainers:
-                        agent.tracker.reset()
-                self.episode_step = 0
-                self.episode_rewards.append(0)
-                for a in self.agent_rewards:
-                    a.append(0)
-                self.agent_info.append([[]])
-            else:
-                self.new_episode=False
-
-            # increment global step counter
-            self.train_step += 1
-
-            # for benchmarking learned policies
-            if arglist.benchmark:
-                for i, info in enumerate(info_n):
-                    self.agent_info[-1][i].append(info_n['n'])
-                if self.train_step > arglist.benchmark_iters and (done or terminal):
-                    file_name = arglist.benchmark_dir + arglist.exp_name + '.pkl'
-                    print('Finished benchmarking, now saving...')
-                    with open(file_name, 'wb') as fp:
-                        pickle.dump(self.agent_info[:-1], fp)
-                    break
-                continue
-
-            # update all trainers, if not in display or benchmark mode
-            loss = None
-
-            # get same episode sampling
-            if arglist.sync_sampling:
-                inds = [random.randint(0, len(self.trainers[0].replay_buffer._storage)-1) for i in range(arglist.batch_size)]
-            else:
-                inds = None
-
-            for agent in self.trainers:
-                # if arglist.lstm:
-                #     agent.preupdate(inds=inds)
-                # else:
-                agent.preupdate(inds)
-            for agent in self.trainers:
-                loss = agent.update(self.trainers, self.train_step)
-                if loss is None: continue
-
-            # for displaying learned policies
-            if arglist.display:
-                self.env.render()
-                # continue
-
-            # save model, display training output
-            if terminal and (len(self.episode_rewards) % arglist.save_rate == 0):
-                U.save_state(arglist.save_dir, saver=self.saver)
-                # print statement depends on whether or not there are adversaries
-                if self.num_adversaries == 0:
-                    print("steps: {}, episodes: {}, mean episode reward: {}, time: {}".format(
-                        self.train_step, len(self.episode_rewards), np.mean(self.episode_rewards[-arglist.save_rate:]), round(time.time()-self.t_start, 3)))
-                else:
-                    print("steps: {}, episodes: {}, mean episode reward: {}, agent episode reward: {}, time: {}".format(
-                        self.train_step, len(self.episode_rewards), np.mean(self.episode_rewards[-arglist.save_rate:]),
-                        [np.mean(rew[-arglist.save_rate:]) for rew in self.agent_rewards], round(time.time()-self.t_start, 3)))
-                self.t_start = time.time()
-                # Keep track of final episode reward
-                self.final_ep_rewards.append(np.mean(self.episode_rewards[-arglist.save_rate:]))
-                for rew in self.agent_rewards:
-                    self.final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
-
     def finish(self, arglist):
         # saves final episode reward for plotting training curve later
         # U.save_state(arglist.save_dir, saver=saver)
@@ -470,11 +322,13 @@ class trainTest():
 
 def train(arglist):
     tt = trainTest()
-    tt.init(arglist)
+
 
     #create environment
     env = make_env(arglist.scenario, arglist, arglist.benchmark)
     episode_step = 0
+
+    tt.init(arglist, env)
 
     #get the first observation (rew, done, info are dummies)
     obs_n = env.reset()
@@ -508,4 +362,6 @@ def train(arglist):
 
 if __name__ == '__main__':
     arglist = parse_args()
+    if arglist.use_cpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     train(arglist)
